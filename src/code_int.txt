@@ -1,0 +1,189 @@
+
+  /*
+  if (String(topic) == "esp32/output") {
+    Serial.print("Changing output to ");
+    if(messageTemp == "on"){
+      Serial.println("on");
+      digitalWrite(ledPin, HIGH);
+    }
+    else if(messageTemp == "off"){
+      Serial.println("off");
+      digitalWrite(ledPin, LOW);
+    }
+  }
+    */
+
+
+      // doc["heap"]["cpuFreqMHz"] = ESP.getCpuFreqMHz();
+      // doc["heap"]["sdkVersion"] = ESP.getSdkVersion();
+      // doc["heap"]["flashChipSize"] = ESP.getFlashChipSize();
+      // doc["heap"]["flashChipSpeed"] = ESP.getFlashChipSpeed();
+      // doc["heap"]["flashChipMode"] = ESP.getFlashChipMode();
+      // doc["heap"]["sketchSize"] = ESP.getSketchSize();
+      // doc["heap"]["sketchMD5"] = ESP.getSketchMD5();
+      // doc["heap"]["freeSketchSpace"] = ESP.getFreeSketchSpace();
+      // doc["heap"]["efuseMac"] = ESP.getEfuseMac();
+      // doc["heap"]["cycleCount"] = ESP.getCycleCount();
+      // doc["heap"]["flashChipSizeMagic"] = ESP.magicFlashChipSize(0);
+      // doc["heap"]["flashChipSpeedMagic"] = ESP.magicFlashChipSpeed(0);
+      // doc["heap"]["flashChipModeMagic"] = ESP.magicFlashChipMode(0);
+
+
+#include <Wire.h>
+#include <RTClib.h>
+
+RTC_DS3231 rtc;
+
+struct Task {
+  const char* name;
+  unsigned long intervalSec;
+  unsigned long lastRunSec;
+  void (*callback)();
+};
+
+// Forward declarations
+void taskEveryMinute();
+void taskEvery30Minutes();
+
+Task tasks[] = {
+  { "EveryMinute",    60,   0, taskEveryMinute },
+  { "Every30Minutes", 1800, 0, taskEvery30Minutes }
+};
+
+const int taskCount = sizeof(tasks) / sizeof(Task);
+
+void setup() {
+  Serial.begin(115200);
+  if (!rtc.begin()) {
+    Serial.println("Couldn't find RTC");
+    while (1);
+  }
+
+  if (rtc.lostPower()) {
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__))); // Set time to compile time
+  }
+
+  unsigned long nowSec = rtc.now().unixtime();
+  for (int i = 0; i < taskCount; i++) {
+    tasks[i].lastRunSec = nowSec;
+  }
+}
+
+void loop() {
+  unsigned long nowSec = rtc.now().unixtime();
+
+  for (int i = 0; i < taskCount; i++) {
+    if (nowSec - tasks[i].lastRunSec >= tasks[i].intervalSec) {
+      tasks[i].callback();
+      tasks[i].lastRunSec = nowSec;
+    }
+  }
+
+  delay(1000);  // Check every second
+}
+
+void taskEveryMinute() {
+  Serial.print("[TASK] Every Minute: ");
+  printTime();
+}
+
+void taskEvery30Minutes() {
+  Serial.print("[TASK] Every 30 Minutes: ");
+  printTime();
+}
+
+void printTime() {
+  DateTime now = rtc.now();
+  Serial.print(now.year()); Serial.print('/');
+  Serial.print(now.month()); Serial.print('/');
+  Serial.print(now.day()); Serial.print(" ");
+  Serial.print(now.hour()); Serial.print(':');
+  Serial.print(now.minute()); Serial.print(':');
+  Serial.println(now.second());
+}
+*/
+
+/*
+Bonus: Sync RTC → ESP32 System Time
+DateTime now = rtc.now();
+struct tm timeinfo = {
+  .tm_year = now.year() - 1900,
+  .tm_mon  = now.month() - 1,
+  .tm_mday = now.day(),
+  .tm_hour = now.hour(),
+  .tm_min  = now.minute(),
+  .tm_sec  = now.second()
+};
+time_t t = mktime(&timeinfo);
+struct timeval nowTime = { .tv_sec = t };
+settimeofday(&nowTime, nullptr);  // Set ESP32 system time
+*/
+
+/*
+#include <Wire.h>
+#include <DS3232RTC.h>  // by Jack Christensen
+#include <TimeLib.h>    // Required by DS3232RTC
+
+#define RTC_INT_PIN 27  // INT/SQW from DS3231 -> GPIO27 on ESP32
+
+volatile bool alarmFired = false;
+
+void IRAM_ATTR handleRtcInterrupt() {
+  alarmFired = true;
+}
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();  // SDA/SCL defaults for ESP32 are 21/22
+  RTC.begin();
+
+  // Optional: Set time once
+  // RTC.set(now());
+
+  // Configure interrupt pin
+  pinMode(RTC_INT_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(RTC_INT_PIN), handleRtcInterrupt, FALLING);
+
+  // Disable square wave output and clear any alarms
+  RTC.squareWave(DS3232RTC::SQWAVE_NONE);
+  RTC.alarm(1);  // Clear Alarm 1
+  RTC.alarm(2);  // Clear Alarm 2
+
+  // Set Alarm 1 to fire once per minute (seconds == 0)
+  RTC.setAlarm(ALM1_MATCH_SECONDS, 0, 0, 0, 0);
+  RTC.alarmInterrupt(1, true);  // Enable Alarm 1 interrupt
+}
+
+void loop() {
+  if (alarmFired) {
+    alarmFired = false;
+
+    if (RTC.alarm(1)) {  // Check which alarm fired and clear it
+      time_t now = RTC.get();
+      Serial.print("[RTC ALARM] Minute Triggered at: ");
+      printTime(now);
+
+      // Re-arm the alarm (needed for recurring alarms)
+      RTC.setAlarm(ALM1_MATCH_SECONDS, 0, 0, 0, 0);
+    }
+  }
+
+  delay(100);  // Light background delay
+}
+
+void printTime(time_t t) {
+  Serial.print(year(t)); Serial.print('/');
+  Serial.print(month(t)); Serial.print('/');
+  Serial.print(day(t)); Serial.print(" ");
+  Serial.print(hour(t)); Serial.print(':');
+  Serial.print(minute(t)); Serial.print(':');
+  Serial.println(second(t));
+}
+
+
+
+void hard_restart() {
+  esp_task_wdt_init(1,true);
+  esp_task_wdt_add(NULL);
+  while(true);
+}

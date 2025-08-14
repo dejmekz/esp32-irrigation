@@ -1,0 +1,362 @@
+/*
+#include <Arduino.h>
+
+struct Plot
+{
+  float lng, lat;
+};
+struct Plot* roundplot;
+
+void setup()
+{
+Serial.printf("PSRAM size:                 %8d bytes\n", ESP.getPsramSize());
+Serial.printf("PSRAM available memory:     %8d bytes\n", ESP.getFreePsram());
+
+roundplot = (Plot *)ps_malloc(128000 * sizeof(Plot));
+
+Serial.printf("PSRAM available memory:     %8d bytes\n", ESP.getFreePsram());
+}
+
+void loop(){};
+
+
+https://esp32io.com/tutorials/esp32-automatic-irrigation-system
+
+
+https://www.instructables.com/ESP32-Soil-Moisture-Sensors-DIY-Automatic-Watering/
+https://circuitdigest.com/microcontroller-projects/smart-irrigation-system-using-esp32-and-blynk-app
+https://srituhobby.com/how-to-make-a-plant-watering-system-with-esp32-board-and-blynk-app/?srsltid=AfmBOoqtjPlNhgcN0gTgDK3m0vnGTyTCJoHfqkzupUoJtHBG9WuiV2Ss
+https://hackaday.io/project/185723-just-another-esp32-irrigation-system
+https://github.com/lrswss/esp32-irrigation-automation/blob/main/src/web.cpp
+
+
+
+int n_elements = 1000;
+unsigned char * acc_data_all;
+
+void setup(){
+        delay(3000);
+        Serial.begin(115200);
+        acc_data_all = (unsigned char *) ps_malloc (n_elements * sizeof (unsigned char));
+        if(psramInit()){
+        Serial.println("\nPSRAM is correctly initialized");
+        }else{
+        Serial.println("PSRAM not available");
+        }
+}
+
+void loop() {
+  Serial.println(acc_data_all[1]);
+  acc_data_all[1] = 'a';
+  delay(5000);
+}
+
+*/
+
+
+
+#include <WiFi.h>
+#include <time.h>
+
+const char* ssid = "TVA_SIT";
+const char* password = "TVE_HESLO";
+
+void setupTime() {
+  configTime(3600, 0, "pool.ntp.org"); // UTC+1 (zimní čas), 0 DST
+  while (time(nullptr) < 100000) {
+    delay(500);
+    Serial.print(".");
+  }
+}
+
+
+
+
+#define PUMP_PIN 5
+#define VALVE1_PIN 12
+#define VALVE2_PIN 13
+#define VALVE3_PIN 14
+
+#define START_HOUR 6
+#define START_MINUTE 0
+
+#define WATER_WAIT 10 // sekund
+#define VALVE_DURATION 180 // sekund (3 min)
+
+bool hasRunToday = false;
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(PUMP_PIN, OUTPUT);
+  pinMode(VALVE1_PIN, OUTPUT);
+  pinMode(VALVE2_PIN, OUTPUT);
+  pinMode(VALVE3_PIN, OUTPUT);
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) delay(500);
+
+  setupTime();
+}
+
+void loop() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) return;
+
+  if (timeinfo.tm_hour == START_HOUR && timeinfo.tm_min == START_MINUTE && !hasRunToday) {
+    runWateringCycle();
+    hasRunToday = true;
+  }
+
+  if (timeinfo.tm_hour == 0 && timeinfo.tm_min == 0) {
+    hasRunToday = false; // reset pro další den
+  }
+
+  delay(1000); // kontrola každou sekundu
+}
+
+void runWateringCycle() {
+  digitalWrite(PUMP_PIN, HIGH);
+  delay(WATER_WAIT * 1000);
+
+  openValve(VALVE1_PIN);
+  openValve(VALVE2_PIN);
+  openValve(VALVE3_PIN);
+
+  digitalWrite(PUMP_PIN, LOW);
+}
+
+void openValve(int pin) {
+  digitalWrite(pin, HIGH);
+  delay(VALVE_DURATION * 1000);
+  digitalWrite(pin, LOW);
+}
+
+
+
+
+
+mathertel/PCF8574
+
+#include <Wire.h>
+#include "RTClib.h"
+#include "PCF8574.h"
+
+#define PUMP_PIN 5             // čerpadlo na GPIO5
+#define WATER_WAIT 10          // čas pro nasátí vody (s)
+#define VALVE_DURATION 180     // délka otevření jednoho ventilu (s)
+#define START_HOUR 6
+#define START_MINUTE 0
+
+RTC_DS3231 rtc;
+PCF8574 pcf(0x20); // adresa PCF8574, často 0x20–0x27 podle zapojení
+
+bool hasRunToday = false;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(); // I²C
+
+  pinMode(PUMP_PIN, OUTPUT);
+  digitalWrite(PUMP_PIN, LOW);
+
+  // Inicializace RTC
+  if (!rtc.begin()) {
+    Serial.println("Chyba: RTC nebyl nalezen!");
+    while (1);
+  }
+
+  // Nepiš čas, pokud to není nutné (jinak odchýlíš RTC)
+  if (rtc.lostPower()) {
+    Serial.println("RTC ztratil napájení, nastav aktuální čas.");
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__))); // nebo vlastní čas
+  }
+
+  // Inicializace PCF8574
+  if (pcf.begin()) {
+    Serial.println("PCF8574 OK");
+    for (int i = 0; i < 8; i++) {
+      pcf.pinMode(i, OUTPUT);
+      pcf.digitalWrite(i, LOW);
+    }
+  } else {
+    Serial.println("Chyba: PCF8574 se nepodařilo inicializovat!");
+    while (1);
+  }
+}
+
+void loop() {
+  DateTime now = rtc.now();
+
+  if (now.hour() == START_HOUR && now.minute() == START_MINUTE && !hasRunToday) {
+    Serial.println("Spouštím zavlažování...");
+    runWateringCycle();
+    hasRunToday = true;
+  }
+
+  // reset na další den (po půlnoci)
+  if (now.hour() == 0 && now.minute() == 0) {
+    hasRunToday = false;
+  }
+
+  delay(1000); // kontrola každou sekundu
+}
+
+void runWateringCycle() {
+  digitalWrite(PUMP_PIN, HIGH);
+  delay(WATER_WAIT * 1000);
+
+  for (int i = 0; i < 4; i++) { // ovládáme 4 ventily
+    openValve(i);
+  }
+
+  digitalWrite(PUMP_PIN, LOW);
+}
+
+void openValve(uint8_t pin) {
+  pcf.digitalWrite(pin, HIGH);
+  delay(VALVE_DURATION * 1000);
+  pcf.digitalWrite(pin, LOW);
+}
+
+------------------------
+
+lib_deps =
+  adafruit/RTClib
+  mathertel/PCF8574
+  arduino-libraries/EEPROM
+  ESP Async WebServer@^1.2.3
+  ESPAsyncTCP
+
+
+  #include <WiFi.h>
+#include <WebServer.h>
+
+const char* ssid = "TVA_SIT";
+const char* password = "TVE_HESLO";
+
+WebServer server(80);
+
+const char MAIN_page[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Zavlažování</title>
+</head>
+<body>
+  <h2>Nastavení zavlažování</h2>
+  <form action="/nastavit" method="POST">
+    Čas startu: <input type="number" name="hodina" min="0" max="23"> :
+    <input type="number" name="minuta" min="0" max="59"><br>
+    Doba ventilů (s): <input type="number" name="doba" min="10" max="3600"><br>
+    <input type="submit" value="Uložit">
+  </form>
+  <br>
+  <form action="/manualni" method="POST">
+    <button type="submit">Spustit manuálně</button>
+  </form>
+</body>
+</html>
+)rawliteral";
+
+int startHour = 6;
+int startMinute = 0;
+int valveDuration = 180;
+bool manualniStart = false;
+
+void handleRoot() {
+  server.send(200, "text/html", MAIN_page);
+}
+
+void handleNastavit() {
+  if (server.hasArg("hodina")) startHour = server.arg("hodina").toInt();
+  if (server.hasArg("minuta")) startMinute = server.arg("minuta").toInt();
+  if (server.hasArg("doba")) valveDuration = server.arg("doba").toInt();
+  server.send(200, "text/html", "<h2>Nastaveno!</h2><a href='/'>Zpět</a>");
+}
+
+void handleManualni() {
+  manualniStart = true;
+  server.send(200, "text/html", "<h2>Manuální spuštění!</h2><a href='/'>Zpět</a>");
+}
+
+void setupWebServer() {
+  server.on("/", handleRoot);
+  server.on("/nastavit", HTTP_POST, handleNastavit);
+  server.on("/manualni", HTTP_POST, handleManualni);
+  server.begin();
+  Serial.println("Web server běží...");
+}
+
+
+WiFi.begin(ssid, password);
+while (WiFi.status() != WL_CONNECTED) {
+  delay(500);
+  Serial.print(".");
+}
+Serial.println("\nWiFi připojeno: ");
+Serial.println(WiFi.localIP());
+
+setupWebServer();
+
+server.handleClient();
+
+// Manuální spuštění
+if (manualniStart) {
+  runWateringCycle(); // nebo runWateringCycle(true)
+  manualniStart = false;
+}
+
+
+//https://github.com/PaoloP74/extEEPROM.git
+/*
+
+const int TASK_SIZE = sizeof(Task);
+const int MAX_TASKS = 10;
+
+void saveTasksToEEPROM() {
+  for (int i = 0; i < taskList.size(); i++) {
+    eeprom.write(i * TASK_SIZE, (uint8_t*)&taskList[i], TASK_SIZE);
+  }
+  Serial.println("✅ Tasks saved to EEPROM.");
+}
+
+void loadTasksFromEEPROM() {
+  taskList.clear();
+  Task temp;
+  for (int i = 0; i < MAX_TASKS; i++) {
+    eeprom.read(i * TASK_SIZE, (uint8_t*)&temp, TASK_SIZE);
+    if (temp.id != 0xFFFF && temp.executed == 0) {  // Simple validation
+      taskList.push_back(temp);
+    }
+  }
+  Serial.printf("✅ Loaded %d task(s) from EEPROM.\n", taskList.size());
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Wire.begin();
+
+  EEPROM_Status status = eeprom.begin();
+  if (status != EEPROM_OK) {
+    Serial.println("❌ EEPROM init failed!");
+    while (true) delay(1000);
+  }
+
+  loadTasksFromEEPROM();
+
+  if (taskList.empty()) {
+    Serial.println("⚠️ No tasks found. Creating default tasks...");
+
+    for (int i = 0; i < 5; i++) {
+      Task t;
+      t.id = i + 1;
+      t.delay = 1000 * (i + 1);
+      t.executed = 0;
+      taskList.push_back(t);
+    }
+
+    saveTasksToEEPROM();
+  }
+}
+*/
