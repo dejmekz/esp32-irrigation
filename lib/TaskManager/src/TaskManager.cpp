@@ -1,52 +1,7 @@
 #include "TaskManager.h"
 #include <esp32-hal-log.h>
 
-Task *findTaskByIdAndType(std::vector<Task *> &taskList, int id, TaskType type)
-{
-  for (Task *t : taskList)
-  {
-    if (t->id == id && t->type == type)
-    {
-      return t;
-    }
-  }
-  return nullptr;
-}
-
-Task *createNewTask(std::vector<Task *> &taskList, bool usePsram, int id, TaskType type, uint16_t valves, uint8_t hour, uint8_t minute, bool pumpOn)
-{
-  Task *task;
-  if (usePsram)
-  {
-    task = (Task *)ps_malloc(sizeof(Task));
-  }
-  else
-  {
-    task = new Task;
-  }
-
-  if (task)
-  {
-    task->id = id;
-    task->valves = valves;
-    task->hour = hour;
-    task->minute = minute;
-    task->pumpOn = pumpOn;
-    task->type = type;
-    taskList.push_back(task);
-    log_i("Created new task with ID: %d, Type: %d, Valves: %04X, Hour: %d, Minute: %d, PumpOn: %d",
-          id, static_cast<int>(type), valves, hour, minute, pumpOn);
-  }
-  else
-  {
-    log_e("Error allocating memory for task!");
-    return nullptr; // Return null if allocation failed
-  }
-
-  return task;
-}
-
-TaskManager::TaskManager(bool usePsram)
+TaskManager::TaskManager(uint8_t hour, uint8_t minute, bool usePsram)
 {
   if (usePsram && !psramFound())
   {
@@ -58,155 +13,174 @@ TaskManager::TaskManager(bool usePsram)
     log_i("PSRAM is available and will be used.");
     usePsram = usePsram;
   }
+
+  _hour = hour;
+  _minute = minute;
+
+  stop();
 }
 
 TaskManager::~TaskManager()
 {
-  clearTasks();
-}
-
-void TaskManager::addOrUpdateScheduleTask(int id, uint8_t hour, uint8_t minute)
-{
-  Task *existing = findTaskByIdAndType(taskList, id, TaskType::Scheduler);
-  if (existing)
+  for (uint8_t i = 0; i < MAX_TASKS; i++)
   {
-    log_i("Task %d already exists, updating hour: %d, minute: %d", id, hour, minute);
-    existing->hour = hour;
-    existing->minute = minute;
-  }
-  else
-  {
-    createNewTask(taskList, usePsram, id, TaskType::Scheduler, 0, hour, minute, false);
-  }
-}
-
-void TaskManager::addOrUpdateValeTask(int id, uint16_t valves, uint8_t minute)
-{
-  Task *existing = findTaskByIdAndType(taskList, id, TaskType::Valve);
-  if (existing)
-  {
-    log_i("Task %d already exists, updating valves: %04X, minute: %d", id, valves, minute);
-    existing->valves = valves;
-    existing->minute = minute;
-  }
-  else
-  {
-    createNewTask(taskList, usePsram, id, TaskType::Valve, valves, 0, minute, false);
-  }
-}
-
-void TaskManager::addOrUpdatePumpTask(int id, bool pumpOn, uint8_t duration)
-{
-  Task *existing = findTaskByIdAndType(taskList, id, TaskType::Pump);
-  if (existing)
-  {
-    log_i("Task %d already exists, updating pump: %d", id, pumpOn);
-    existing->pumpOn = pumpOn;
-    existing->minute = duration; // Update duration if needed
-  }
-  else
-  {
-    createNewTask(taskList, usePsram, id, TaskType::Pump, 0, 0, duration, pumpOn);
-  }
-}
-
-void TaskManager::clearTasks()
-{
-  for (Task *t : taskList)
-  {
-    if (usePsram)
+    if (_valve_settings[i] != nullptr)
     {
-      free(t);
-    }
-    else
-    {
-      delete t;
+      free(_valve_settings[i]);  // Works for both malloc and ps_malloc
+      _valve_settings[i] = nullptr;
     }
   }
-  taskList.clear();
-  currentTask = 0;
+  log_d("TaskManager destroyed, memory freed");
 }
 
-void TaskManager::activateTask()
+void TaskManager::setStartTime(uint8_t hour, uint8_t minute)
 {
-  if (taskList.empty())
-  {
-    log_i("No tasks available to activate.");
-    log_i("TaskList size: %d, currentTask: %d", taskList.size(), currentTask);
-    log_i("TaskList begin: %d, end: %d", taskList.begin(), taskList.end());
-    return;
+  _hour = hour;
+  _minute = minute;
+}
+
+valve_setting_t* TaskManager::actualValveSetting()
+{
+  return _actual_valve_settings;
+}
+
+uint8_t TaskManager::timeLeft()
+{
+  return _actual_delay;
+}
+
+const char* TaskManager::executeAt() { 
+  static char info[6];
+  snprintf(info, sizeof(info), "%02d:%02d", _hour, _minute);
+  return info;
+}
+
+const char* TaskManager::statusMessage() { 
+  static char info[21];
+
+  if (_current_valve_setting < 0 || _actual_valve_settings == nullptr) {
+    snprintf(info, sizeof(info), "Cekam do: %02d:%02d", _hour, _minute);
+    return info;
   }
 
-  currentTask++;
-
-  if (currentTask >= taskList.size())
-  {
-    log_i("Reached the end of task list, resetting to first task.");
-    currentTask = 0; // Reset to first task
+  if (_pump_is_ready == 0) {
+    snprintf(info, sizeof(info), "Cekam na cerpadlo");
+    return info;
   }
+  
+  //Ukol:00 - 00 [00]
+  snprintf(info, sizeof(info), "Ukol:%2d - %02d [%02d]",_current_valve_setting,  _actual_delay, _actual_valve_settings->duration);
+  return info;
+}
 
-  log_i("TaskList size: %d, currentTask: %d", taskList.size(), currentTask);
 
-  Task *task = taskList[currentTask];
-  if (task)
+bool TaskManager::isRunning()
+{
+  return _actual_valve_settings != nullptr;
+}
+
+bool TaskManager::isPumpOn()
+{
+  return _pump_is_ready != 0;
+}
+
+bool TaskManager::setValveSetting(uint8_t idx, uint16_t valves, uint8_t duration)
+{
+  valve_setting_t *setting;
+  if (usePsram)
   {
-    delayMin = task->minute;
-    actualTask = task;
-
-    log_i("Actived task with ID: %d, Type: %d, Valves: %04X, Hour: %d, Minute: %d, PumpOn: %d",
-          task->id, static_cast<int>(task->type), task->valves, task->hour, task->minute, task->pumpOn);
-
-    return;
+    setting = (valve_setting_t *)ps_malloc(sizeof(valve_setting_t));
   }
   else
   {
-    actualTask = nullptr;
-    log_e("Error: Task pointer at index %d is null!", currentTask);
+    setting = (valve_setting_t *)malloc(sizeof(valve_setting_t));
   }
+
+  if (setting != nullptr)
+  {
+    setting->valves = valves;
+    setting->duration = duration;
+    _valve_settings[idx] = setting;
+    return true;
+  }
+  else
+  {
+    log_e("Failed to allocate memory for valve setting at index %d", idx);
+    return false;
+  }
+}
+
+void TaskManager::start()
+{
+  log_d("Starting ...");
+    _current_valve_setting = 0; // Start from the first task
+    if (_onPumpSet)
+    {
+      _onPumpSet(true); // Turn on the pump
+    }
+}
+
+void TaskManager::stop(){
+    log_d("Stopping ...");
+    _actual_valve_settings = nullptr;
+    _pump_is_ready = 0;
+    if (_onPumpSet)
+    {
+      _onPumpSet(false); // Turn off the pump
+    }
+    _current_valve_setting = -1;
 }
 
 void TaskManager::loop(uint8_t hour, uint8_t minute)
 {
-  log_d("TaskManager loop: %02d:%02d", hour, minute);
-  if (hour == 0 && minute == 0)
-  {
-    currentTask = -1;     // Reset current task at midnight
-    actualTask = nullptr; // Clear the current task
-    delayMin = 0;         // Reset delay
-    log_i("Resetting tasks at midnight.");
-  }
+  log_d("TaskManager loop: %02d:%02d, executed:%d, pump state:%d", hour, minute, _current_valve_setting, _pump_is_ready);
 
-  if (actualTask != nullptr)
+  if (_current_valve_setting == -1)
   {
-    log_d("Current task ID: %d, Type: %d, Valves: %04X, Hour: %d, Minute: %d, PumpOn: %d, delayMin: %d",
-          actualTask->id, static_cast<int>(actualTask->type), actualTask->valves,
-          actualTask->hour, actualTask->minute, actualTask->pumpOn, delayMin);
-
-    if (actualTask->type == TaskType::Scheduler)
+    if (hour != _hour || minute != _minute)
     {
-      // If the task is a scheduler, check if the hour and minute match
-      if (actualTask->hour != hour || actualTask->minute != minute)
-      {
-        log_d("Skipping task %d, scheduled for %02d:%02d", actualTask->id, actualTask->hour, actualTask->minute);
-        return; // Skip if the time does not match
-      }
-    } else if (delayMin > 0)
-    {
-      delayMin--;
-      return; // Skip if delay is not yet zero
+      return; // Not the time to start tasks yet
     }
+
+    log_d("Initial time match at %02d:%02d", hour, minute);
+    start();
   }
 
-  activateTask();
-
-  if (onTaskDone)
+  if (_pump_is_ready == 0 && _onIsReady)
   {
-    onTaskDone(actualTask); // Call the callback
+    _pump_is_ready = _onIsReady() ? 1 : 0;
+    log_d("Pump readiness check: %d", _pump_is_ready);
+    return; // Wait until the pump is ready
+  }
+
+  if (_actual_delay > 0)
+  {
+    _actual_delay--;
+    log_d("Decrementing actual delay: %d", _actual_delay);
+    return; // Still waiting
+  }
+  
+  _current_valve_setting++;
+  if (_current_valve_setting >= MAX_TASKS || _valve_settings[_current_valve_setting] == nullptr)
+  {
+    stop();
+    return;
+  }
+
+  _actual_valve_settings = _valve_settings[_current_valve_setting];
+  _actual_delay = _actual_valve_settings->duration;
+ 
+  log_d("Switching to valve setting %d: valves=%d, duration=%d", _current_valve_setting, _actual_valve_settings->valves, _actual_delay);
+ 
+  if (_onValveSet)
+  {
+    _onValveSet(_actual_valve_settings); // Call the callback to change valve state
   }
 }
 
-void TaskManager::setOnTaskActive(TaskDoneCallback callback)
+void TaskManager::setCallbacks(ValveSetCallback setValve, PumpCallback setPump, std::function<bool ()> isReady)
 {
-  onTaskDone = callback; // Store the callback
+  _onValveSet = setValve; // Store callback
+  _onPumpSet = setPump;   // Store callback
+  _onIsReady = isReady;   // Store callback
 }
-

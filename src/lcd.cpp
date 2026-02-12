@@ -31,36 +31,23 @@ void lcd_print_temp(int row, int column, float value)
 }
 
 
-void lcd_print_task(int row, int column, Task *task, uint16_t remains)
+void lcd_print_task(TaskManager& taskManager)
 {
     lcd.clr(1);
     lcd.clr(2);
 
-    lcd.locate(row, column);
-    if (task == nullptr || task->type == TaskType::None)
-    {
-        lcd.print("Ukol:?? - neznamy");
-        return;
-    }
+    lcd.locate(1, 1);
+    lcd.printf(taskManager.statusMessage());
 
-    if (task->type == TaskType::Scheduler)
-    {
-        lcd.printf("Ukol:%02d @ %02d:%02d", task->id, task->hour, task->minute);
-    }
-    else
-    {
-        lcd.printf("Ukol:%02d - %02d [%02d]", task->id, remains, task->minute);
-        lcd.locate(row + 1, column);
-        
-        if (task->type == TaskType::Pump)
-        {   
-            lcd.printf("Cerpadlo: %s", task->pumpOn ? "ZAP" : "VYP");
+    if (taskManager.isRunning() && taskManager.isPumpOn()) { 
+        lcd.locate(2, 1);
+
+        valve_setting_t* tsk = taskManager.actualValveSetting();
+        if (tsk == nullptr) {
+            lcd.print("No active task");
+            return;
+        } else {
+           lcd.print(toValveString(tsk->valves));
         }
-
-        if (task->type == TaskType::Valve) 
-        {
-            String valveStr = toValveString(task->valves);
-            lcd.print(valveStr);
-        }        
-    }
+   }
 }
