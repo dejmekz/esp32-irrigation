@@ -65,14 +65,14 @@ void onAlarm()
 
 void setup()
 {
+  setupVariables();
+
   wifi_init(DeviceName, WIFI_SSID, WIFI_PASSWORD);
   mqtt_init(DeviceName, MQTT_SERVER, MQTT_PORT, MQTT_USER, MQTT_PASSWORD, mqtt_topic_will);
   mqtt_set_callback(mqtt_message_handler, mqtt_setup_after_connect);
 
   esp32_FOTA.setManifestURL(FOTA_MANIFEST_URL);
-  esp32_FOTA.printConfig();
-
-  setupVariables();
+  esp32_FOTA.printConfig();  
 
   log_i("Starting ESP32C3_IRRIGATION...");
 
